@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ class Extension:
     content_scripts: int
     manifest_path: str
     risk_score: int = 0
+    enabled: bool = True
+    install_method: str = "normal"
 
 
 @dataclass(frozen=True)
@@ -38,9 +41,13 @@ class ExtensionScope(Module):
 
     def __init__(self) -> None:
         self._bases = [
-            Path.home() / ".config/google-chrome/Default/Extensions",
-            Path.home() / ".config/chromium/Default/Extensions",
-            Path.home() / ".config/microsoft-edge/Default/Extensions",
+            Path.home() / ".config/google-chrome/Default",
+            Path.home() / ".config/chromium/Default",
+            Path.home() / ".config/microsoft-edge/Default",
+        ]
+        self._extension_dirs = [
+            "Extensions",
+            "Extension State",
         ]
 
     async def execute(self, bus: Bus) -> None:
@@ -49,7 +56,7 @@ class ExtensionScope(Module):
             payload={"status": "running"},
             source=self.name,
         ))
-        report = self._scan_extension_dirs()
+        report = self._scan()
         await bus.publish(Event(
             topic="extensionscope.completed",
             payload={
@@ -59,42 +66,79 @@ class ExtensionScope(Module):
             source=self.name,
         ))
 
-    def _scan_extension_dirs(self) -> ExtensionScopeReport:
+    def _scan(self) -> ExtensionScopeReport:
         report = ExtensionScopeReport()
         for base in self._bases:
             if not base.exists() or not base.is_dir():
                 continue
-            for ext_id in base.iterdir():
-                if not ext_id.is_dir():
-                    continue
-                for version_dir in ext_id.iterdir():
-                    manifest = version_dir / "manifest.json"
-                    if not manifest.exists():
+            self._scan_preferences(base, report)
+            self._scan_extension_dirs(base, report)
+        report.extensions.sort(key=lambda e: e.risk_score, reverse=True)
+        return report
+
+    def _scan_preferences(self, profile_dir: Path, report: ExtensionScopeReport) -> None:
+        for name in ("Preferences", "Secure Preferences"):
+            path = profile_dir / name
+            if not path.exists():
+                continue
+            try:
+                data = json.loads(path.read_text())
+                settings = data.get("settings", {})
+                extensions = settings.get("extensions", {})
+                settings_list = extensions.get("settings", {})
+                for ext_id, ext_data in settings_list.items():
+                    if not isinstance(ext_data, dict):
+                        continue
+                    manifest_path = self._find_manifest(profile_dir, ext_id, ext_data.get("manifest", {}).get("version", ""))
+                    if manifest_path is None:
+                        report.anomalies.append(f"missing_manifest:{ext_id}")
                         continue
                     try:
-                        data = json.loads(manifest.read_text())
-                        permissions = data.get("permissions", [])
-                        host_permissions = data.get("host_permissions", [])
-                        content_scripts = len(data.get("content_scripts", []))
+                        manifest = json.loads(manifest_path.read_text())
+                        permissions = manifest.get("permissions", [])
+                        host_permissions = manifest.get("host_permissions", [])
+                        content_scripts = len(manifest.get("content_scripts", []))
                         risk = self._score_risk(permissions, host_permissions, content_scripts)
-                        ext = Extension(
-                            id=ext_id.name,
-                            name=data.get("name", "unknown"),
-                            version=data.get("version", "unknown"),
+                        report.extensions.append(Extension(
+                            id=ext_id,
+                            name=ext_data.get("manifest", {}).get("name", manifest.get("name", "unknown")),
+                            version=ext_data.get("manifest", {}).get("version", manifest.get("version", "unknown")),
                             permissions=list(permissions),
                             host_permissions=list(host_permissions),
                             content_scripts=content_scripts,
-                            manifest_path=str(manifest),
+                            manifest_path=str(manifest_path),
                             risk_score=risk,
-                        )
-                        report.extensions.append(ext)
-                        if risk >= 7:
-                            report.anomalies.append(f"high_risk_extension:{ext_id.name}:{risk}")
+                            enabled=not ext_data.get("disabled", False),
+                            install_method=ext_data.get("install_type", "normal"),
+                        ))
                     except (json.JSONDecodeError, OSError) as exc:
-                        logger.debug("manifest parse failed %s: %s", manifest, exc)
-                        continue
-        report.extensions.sort(key=lambda e: e.risk_score, reverse=True)
-        return report
+                        report.anomalies.append(f"manifest_read_failed:{ext_id}:{exc}")
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.debug("preferences read failed %s: %s", path, exc)
+
+    def _scan_extension_dirs(self, profile_dir: Path, report: ExtensionScopeReport) -> None:
+        extensions_dir = profile_dir / "Extensions"
+        if not extensions_dir.exists():
+            return
+        known_ids = {e.id for e in report.extensions}
+        for ext_id in extensions_dir.iterdir():
+            if not ext_id.is_dir():
+                continue
+            for version_dir in ext_id.iterdir():
+                manifest = version_dir / "manifest.json"
+                if not manifest.exists():
+                    continue
+                if ext_id.name not in known_ids:
+                    report.anomalies.append(f"orphaned_extension_dir:{ext_id.name}")
+
+    def _find_manifest(self, profile_dir: Path, ext_id: str, version: str) -> Path | None:
+        candidates = [
+            profile_dir / "Extensions" / ext_id / version / "manifest.json",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
 
     def _score_risk(self, permissions: list[str], host_permissions: list[str], content_scripts: int) -> int:
         score = 0

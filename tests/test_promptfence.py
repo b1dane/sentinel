@@ -17,6 +17,7 @@ async def test_promptfence_detects_injection():
     bus = object()
     fence = PromptFence()
     # exercise module contract without needing real bus
-    report = fence._scan_default_inputs()
+    report = PromptFenceReport()
+    fence._scan_default_inputs(report)
     assert report.inputs_scanned == 8
     assert len(report.matches) >= 5

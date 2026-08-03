@@ -31,4 +31,11 @@ def test_anomalies_for_stale_entries():
     audit = MemoryAudit()
     report = audit._scan_local_stores()
     reasons = [a.reason for a in report.anomalies]
-    assert "stale_entry" in reasons or "cross_session_carryover" in reasons
+    assert "stale_entry" in reasons or "session_id_detected" in reasons
+
+
+def test_content_preview_populated():
+    audit = MemoryAudit()
+    report = audit._scan_local_stores()
+    entries_with_preview = [e for e in report.entries if e.content_preview is not None]
+    assert len(entries_with_preview) >= 1

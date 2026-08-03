@@ -26,13 +26,12 @@ def test_risk_score_for_sensitive_permission():
     assert score >= 2
 
 
-def test_scan_parses_manifest(tmp_path: Path):
-    scope = ExtensionScope()
-    base = tmp_path / "extensions"
-    ext_id = base / "abc"
-    version_dir = ext_id / "1.0"
-    version_dir.mkdir(parents=True)
-    manifest = version_dir / "manifest.json"
+def test_scan_preferences(tmp_path: Path):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    ext_dir = profile / "Extensions" / "abc" / "1.0"
+    ext_dir.mkdir(parents=True)
+    manifest = ext_dir / "manifest.json"
     manifest.write_text(json.dumps({
         "name": "Test",
         "version": "1.0",
@@ -40,8 +39,35 @@ def test_scan_parses_manifest(tmp_path: Path):
         "host_permissions": ["https://*/*"],
         "content_scripts": [{"js": ["a.js"]}],
     }))
-    scope._bases = [base]
-    report = scope._scan_extension_dirs()
+    prefs = {
+        "settings": {
+            "extensions": {
+                "settings": {
+                    "abc": {
+                        "manifest": {"name": "Test", "version": "1.0"},
+                        "install_type": "normal",
+                        "disabled": False,
+                    }
+                }
+            }
+        }
+    }
+    (profile / "Preferences").write_text(json.dumps(prefs))
+    scope = ExtensionScope()
+    scope._bases = [profile]
+    report = scope._scan()
     assert len(report.extensions) == 1
     assert report.extensions[0].name == "Test"
     assert report.extensions[0].risk_score >= 3
+
+
+def test_orphaned_extension_dir(tmp_path: Path):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    orphan = profile / "Extensions" / "orphan" / "1.0"
+    orphan.mkdir(parents=True)
+    (orphan / "manifest.json").write_text("{}")
+    scope = ExtensionScope()
+    scope._bases = [profile]
+    report = scope._scan()
+    assert any(a.startswith("orphaned_extension_dir:orphan") for a in report.anomalies)

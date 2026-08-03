@@ -24,6 +24,7 @@ class MemoryEntry:
     ttl_seconds: float | None = None
     category: str | None = None
     session_id: str | None = None
+    content_preview: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,11 +75,13 @@ class MemoryAudit(Module):
                     path = Path(root) / name
                     try:
                         stat = path.stat()
+                        content_preview = self._safe_preview(path)
                         entry = MemoryEntry(
                             path=str(path),
                             size_bytes=stat.st_size,
                             modified_ts=stat.st_mtime,
                             category=category,
+                            content_preview=content_preview,
                         )
                         report.entries.append(entry)
                         age = now - stat.st_mtime
@@ -92,36 +95,18 @@ class MemoryAudit(Module):
                                 entry=entry,
                                 reason="large_recent_write",
                             ))
+                        if category == "memory" and content_preview and "session_id" in content_preview:
+                            report.anomalies.append(RetentionAnomaly(
+                                entry=entry,
+                                reason="session_id_detected",
+                            ))
                     except OSError:
                         continue
-        self._detect_cross_session_carryover(report, now)
         return report
 
-    def _detect_cross_session_carryover(self, report: MemoryAuditReport, now: float) -> None:
-        user_memory_dir = Path.home() / ".hermes" / "memories"
-        if not user_memory_dir.exists():
-            return
-        sessions: dict[str, list[float]] = {}
-        for path in user_memory_dir.rglob("*"):
-            if not path.is_file():
-                continue
-            try:
-                content = path.read_text(errors="ignore")
-                if "session_id" not in content:
-                    continue
-                stat = path.stat()
-                sessions.setdefault(path.name, []).append(stat.st_mtime)
-            except OSError:
-                continue
-        for session_name, mtimes in sessions.items():
-            if len(mtimes) > 1:
-                report.anomalies.append(RetentionAnomaly(
-                    entry=MemoryEntry(
-                        path=str(user_memory_dir / session_name),
-                        size_bytes=0,
-                        modified_ts=mtimes[-1],
-                        category="memory",
-                        session_id=session_name,
-                    ),
-                    reason="cross_session_carryover",
-                ))
+    def _safe_preview(self, path: Path, max_bytes: int = 256) -> str | None:
+        try:
+            with path.open("r", errors="ignore") as f:
+                return f.read(max_bytes)
+        except OSError:
+            return None

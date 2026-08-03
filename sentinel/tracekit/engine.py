@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sqlite3
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -46,10 +47,26 @@ class VendorScript:
 
 
 @dataclass(frozen=True)
+class LineageNode:
+    id: str
+    label: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class LineageEdge:
+    source: str
+    target: str
+    label: str
+
+
+@dataclass
 class TraceReport:
     cookies: list[Cookie] = field(default_factory=list)
     urls: list[URLTrace] = field(default_factory=list)
     vendor_scripts: list[VendorScript] = field(default_factory=list)
+    lineage_nodes: list[LineageNode] = field(default_factory=list)
+    lineage_edges: list[LineageEdge] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -70,6 +87,8 @@ class TraceKit(Module):
                 "cookies": [c.__dict__ for c in report.cookies],
                 "urls": [u.__dict__ for u in report.urls],
                 "vendor_scripts": [v.__dict__ for v in report.vendor_scripts],
+                "lineage_nodes": [n.__dict__ for n in report.lineage_nodes],
+                "lineage_edges": [e.__dict__ for e in report.lineage_edges],
                 "errors": report.errors,
             },
             source=self.name,
@@ -79,6 +98,7 @@ class TraceKit(Module):
         report = TraceReport()
         self._scan_browser_dirs(report)
         self._scan_sample_urls(report)
+        self._build_lineage(report)
         return report
 
     def _scan_browser_dirs(self, report: TraceReport) -> None:
@@ -173,3 +193,27 @@ class TraceKit(Module):
                     domain=parsed.netloc,
                     inline=False,
                 ))
+
+    def _build_lineage(self, report: TraceReport) -> None:
+        nodes: dict[str, LineageNode] = {}
+        edges: list[LineageEdge] = []
+
+        def ensure_node(ident: str, label: str, kind: str) -> None:
+            if ident not in nodes:
+                nodes[ident] = LineageNode(id=ident, label=label, kind=kind)
+
+        for url in report.urls:
+            domain = url.domain
+            ensure_node(f"domain:{domain}", domain, "domain")
+            ensure_node(f"url:{url.url}", url.url, "url")
+            edges.append(LineageEdge(source=f"domain:{domain}", target=f"url:{url.url}", label="hosts"))
+            for param in url.params:
+                ensure_node(f"param:{param}", param, "param")
+                edges.append(LineageEdge(source=f"url:{url.url}", target=f"param:{param}", label="query"))
+        for script in report.vendor_scripts:
+            ensure_node(f"script:{script.url}", script.url, "script")
+            ensure_node(f"domain:{script.domain}", script.domain, "domain")
+            edges.append(LineageEdge(source=f"domain:{script.domain}", target=f"script:{script.url}", label="serves"))
+
+        report.lineage_nodes = list(nodes.values())
+        report.lineage_edges = edges

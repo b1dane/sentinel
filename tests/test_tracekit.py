@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-from sentinel.tracekit.engine import TraceKit, TraceReport
+from sentinel.tracekit.engine import TraceKit, TraceReport, LineageNode, LineageEdge
 
 
 def test_trace_report_defaults():
@@ -13,6 +13,8 @@ def test_trace_report_defaults():
     assert report.cookies == []
     assert report.urls == []
     assert report.vendor_scripts == []
+    assert report.lineage_nodes == []
+    assert report.lineage_edges == []
     assert report.errors == []
 
 
@@ -29,6 +31,16 @@ def test_tracekit_vendor_script_detection():
     report = kit._scan()
     domains = [s.domain for s in report.vendor_scripts]
     assert "example.com" in domains or "cdn.example.com" in domains
+
+
+def test_tracekit_lineage_graph():
+    kit = TraceKit()
+    report = kit._scan()
+    node_ids = [n.id for n in report.lineage_nodes]
+    edge_count = len(report.lineage_edges)
+    assert edge_count >= 1
+    assert any("domain:" in nid for nid in node_ids)
+    assert any("url:" in nid for nid in node_ids)
 
 
 def test_read_cookies_from_sqlite(tmp_path: Path):
