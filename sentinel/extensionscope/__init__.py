@@ -1,0 +1,1 @@
+"""ExtensionScope — Browser extension auditor."""
