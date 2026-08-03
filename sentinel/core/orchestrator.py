@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Sequence
+from typing import Any, Sequence
 
 from sentinel.bus import Bus
 from sentinel.core.registry import Registry
@@ -17,10 +17,31 @@ class Orchestrator:
         self.bus = bus
         self.registry = Registry()
 
-    async def run(self, modules: Sequence[str] | None = None) -> None:
+    async def run(self, modules: Sequence[str] | None = None) -> dict[str, Any]:
         selected = self.registry.all() if not modules else self.registry.select(modules)
         if not selected:
             logger.warning("No modules selected.")
-            return
+            return {}
         tasks = [module.execute(self.bus) for module in selected]
         await asyncio.gather(*tasks, return_exceptions=True)
+        return await self._build_results(selected)
+
+    async def _build_results(self, modules: list) -> dict[str, Any]:
+        results: dict[str, Any] = {}
+        for module in modules:
+            module_name = module.name
+            completed_events = [
+                e for e in await self.bus.replay()
+                if e.source == module_name and e.topic.endswith(".completed")
+            ]
+            if not completed_events:
+                results[module_name] = {
+                    "status": "no_output",
+                    "error": "Module did not emit a completion event.",
+                }
+                continue
+            last = completed_events[-1]
+            payload = dict(last.payload)
+            payload["status"] = "ok"
+            results[module_name] = payload
+        return results

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -91,18 +92,10 @@ class TraceKit(Module):
                 continue
             cookies_db = base / "Cookies"
             if cookies_db.exists():
-                report.urls.append(URLTrace(
-                    url=f"file://{cookies_db}",
-                    domain=base.name,
-                    params={},
-                ))
+                self._read_cookies(cookies_db, base.name, report)
             history_db = base / "History"
             if history_db.exists():
-                report.urls.append(URLTrace(
-                    url=f"file://{history_db}",
-                    domain=base.name,
-                    params={},
-                ))
+                self._read_history(history_db, base.name, report)
             for manifest in base.glob("Extensions/*/manifest.json"):
                 try:
                     data = json.loads(manifest.read_text())
@@ -115,6 +108,47 @@ class TraceKit(Module):
                             ))
                 except (json.JSONDecodeError, OSError):
                     continue
+
+    def _read_cookies(self, db_path: Path, profile: str, report: TraceReport) -> None:
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT host_key, name, path, is_secure, is_httponly, samesite FROM cookies LIMIT 200")
+            for row in cur.fetchall():
+                report.cookies.append(Cookie(
+                    domain=row["host_key"],
+                    name=row["name"],
+                    path=row["path"],
+                    secure=bool(row["is_secure"]),
+                    http_only=bool(row["is_httponly"]),
+                    same_site=str(row["samesite"]) if row["samesite"] is not None else None,
+                    samesite=None,
+                ))
+            conn.close()
+        except (sqlite3.Error, OSError) as exc:
+            report.errors.append(f"cookie_read_failed:{profile}:{exc}")
+
+    def _read_history(self, db_path: Path, profile: str, report: TraceReport) -> None:
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT url, title FROM urls ORDER BY last_visit_time DESC LIMIT 50")
+            for row in cur.fetchall():
+                url = row["url"]
+                parsed = urlparse(url)
+                params = {k: v for k, v in parse_qs(parsed.query).items()}
+                utm = {k: v[0] for k, v in params.items() if k.startswith("utm_")}
+                report.urls.append(URLTrace(
+                    url=url,
+                    domain=parsed.netloc,
+                    params=params,
+                    utm_params=utm,
+                ))
+            conn.close()
+        except (sqlite3.Error, OSError) as exc:
+            report.errors.append(f"history_read_failed:{profile}:{exc}")
 
     def _scan_sample_urls(self, report: TraceReport) -> None:
         samples = [
