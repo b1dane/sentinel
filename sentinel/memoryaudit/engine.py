@@ -54,7 +54,13 @@ class MemoryAudit(Module):
             topic="memoryaudit.completed",
             payload={
                 "entries": [e.__dict__ for e in report.entries],
-                "anomalies": [a.__dict__ for a in report.anomalies],
+                "anomalies": [
+                    {
+                        "entry": a.entry.__dict__,
+                        "reason": a.reason,
+                    }
+                    for a in report.anomalies
+                ],
             },
             source=self.name,
         ))
@@ -63,19 +69,21 @@ class MemoryAudit(Module):
         report = MemoryAuditReport()
         bases = [
             (Path.home() / ".hermes" / "memories", "memory"),
-            (Path.home() / ".hermes" / "skills", "skill"),
             (Path.home() / ".config" / "gh", "config"),
         ]
         now = time.time()
+        max_entries = 100
         for base, category in bases:
             if not base.exists() or not base.is_dir():
                 continue
             for root, _, files in os.walk(base):
                 for name in files:
+                    if len(report.entries) >= max_entries:
+                        break
                     path = Path(root) / name
                     try:
                         stat = path.stat()
-                        content_preview = self._safe_preview(path)
+                        content_preview = self._safe_preview(path, max_bytes=128)
                         entry = MemoryEntry(
                             path=str(path),
                             size_bytes=stat.st_size,
@@ -102,6 +110,10 @@ class MemoryAudit(Module):
                             ))
                     except OSError:
                         continue
+                if len(report.entries) >= max_entries:
+                    break
+            if len(report.entries) >= max_entries:
+                break
         return report
 
     def _safe_preview(self, path: Path, max_bytes: int = 256) -> str | None:

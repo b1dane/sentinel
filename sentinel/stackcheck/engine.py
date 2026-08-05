@@ -77,24 +77,47 @@ class StackCheck(Module):
         try:
             if platform.system() == "Windows":
                 cmd = ["tasklist", "/fo", "csv", "/nh"]
+                output = subprocess.check_output(cmd, text=True, timeout=10)
+                self._parse_windows_processes(output, report)
             else:
-                cmd = ["ps", "-eo", "pid,comm,args,uid"]
-            output = subprocess.check_output(cmd, text=True, timeout=10)
+                cmd = ["ps", "-eo", "pid=,comm=,args=,uid="]
+                output = subprocess.check_output(cmd, text=True, timeout=10)
+                self._parse_unix_processes(output, report)
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.error("process scan failed: %s", exc)
             report.anomalies.append(f"process_scan_failed:{exc}")
-            return
+
+    def _parse_unix_processes(self, output: str, report: StackCheckReport) -> None:
         for line in output.splitlines():
             line = line.strip()
             if not line:
                 continue
-            parts = line.split()
+            parts = line.split(None, 3)
+            if len(parts) < 4:
+                continue
             try:
                 pid = int(parts[0])
-                name = parts[1] if len(parts) > 1 else "unknown"
-                cmdline = " ".join(parts[2:-1]) if len(parts) > 3 else " ".join(parts[2:])
-                uid = int(parts[-1]) if len(parts) > 2 and parts[-1].isdigit() else None
+                name = parts[1]
+                uid_str = parts[2]
+                uid = int(uid_str) if uid_str.isdigit() else None
+                cmdline = parts[3].strip()
                 report.processes.append(ProcessInfo(pid=pid, name=name, cmdline=cmdline, uid=uid))
+            except (ValueError, IndexError):
+                continue
+
+    def _parse_windows_processes(self, output: str, report: StackCheckReport) -> None:
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = [p.strip('"') for p in line.split(",")]
+            if len(parts) < 3:
+                continue
+            try:
+                name = parts[0]
+                pid = int(parts[1])
+                cmdline = parts[2] if len(parts) > 2 else ""
+                report.processes.append(ProcessInfo(pid=pid, name=name, cmdline=cmdline))
             except (ValueError, IndexError):
                 continue
 
