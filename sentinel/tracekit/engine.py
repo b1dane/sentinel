@@ -60,6 +60,16 @@ class LineageEdge:
     label: str
 
 
+@dataclass(frozen=True)
+class DataFlowMap:
+    domain: str
+    request_count: int
+    param_names: list[str]
+    cookies_set: list[str]
+    scripts_loaded: list[str]
+    redirects: int
+
+
 @dataclass
 class TraceReport:
     cookies: list[Cookie] = field(default_factory=list)
@@ -67,6 +77,7 @@ class TraceReport:
     vendor_scripts: list[VendorScript] = field(default_factory=list)
     lineage_nodes: list[LineageNode] = field(default_factory=list)
     lineage_edges: list[LineageEdge] = field(default_factory=list)
+    data_flow_maps: list[DataFlowMap] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -89,6 +100,7 @@ class TraceKit(Module):
                 "vendor_scripts": [v.__dict__ for v in report.vendor_scripts],
                 "lineage_nodes": [n.__dict__ for n in report.lineage_nodes],
                 "lineage_edges": [e.__dict__ for e in report.lineage_edges],
+                "data_flow_maps": [m.__dict__ for m in report.data_flow_maps],
                 "errors": report.errors,
             },
             source=self.name,
@@ -99,6 +111,7 @@ class TraceKit(Module):
         self._scan_browser_dirs(report)
         self._scan_sample_urls(report)
         self._build_lineage(report)
+        self._build_data_flow_maps(report)
         return report
 
     def _scan_browser_dirs(self, report: TraceReport) -> None:
@@ -217,3 +230,32 @@ class TraceKit(Module):
 
         report.lineage_nodes = list(nodes.values())
         report.lineage_edges = edges
+
+    def _build_data_flow_maps(self, report: TraceReport) -> None:
+        domain_stats: dict[str, dict[str, Any]] = defaultdict(lambda: {
+            "request_count": 0,
+            "param_names": set(),
+            "cookies_set": set(),
+            "scripts_loaded": set(),
+            "redirects": 0,
+        })
+        for url in report.urls:
+            stats = domain_stats[url.domain]
+            stats["request_count"] += 1
+            stats["param_names"].update(url.params.keys())
+            if url.referrer:
+                stats["redirects"] += 1
+        for cookie in report.cookies:
+            domain_stats[cookie.domain]["cookies_set"].add(cookie.name)
+        for script in report.vendor_scripts:
+            domain_stats[script.domain]["scripts_loaded"].add(script.url)
+        for domain, stats in domain_stats.items():
+            report.data_flow_maps.append(DataFlowMap(
+                domain=domain,
+                request_count=stats["request_count"],
+                param_names=sorted(stats["param_names"]),
+                cookies_set=sorted(stats["cookies_set"]),
+                scripts_loaded=sorted(stats["scripts_loaded"]),
+                redirects=stats["redirects"],
+            ))
+        report.data_flow_maps.sort(key=lambda m: m.request_count, reverse=True)

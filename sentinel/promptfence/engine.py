@@ -39,6 +39,7 @@ class InjectionMatch:
     text: str
     line: int | None = None
     severity: str = "medium"
+    detected_at: str | None = None
 
 
 @dataclass
@@ -47,7 +48,8 @@ class PromptFenceReport:
     matches: list[InjectionMatch] = field(default_factory=list)
     anomalies: list[str] = field(default_factory=list)
     input_hashes: dict[str, str] = field(default_factory=dict)
-    stream_buffer: list[str] = field(default_factory=list)
+    stream_buffer: list[dict[str, Any]] = field(default_factory=list)
+    watch_stats: dict[str, Any] = field(default_factory=dict)
 
 
 class PromptFence(Module):
@@ -79,6 +81,7 @@ class PromptFence(Module):
                 "anomalies": report.anomalies,
                 "input_hashes": report.input_hashes,
                 "stream_buffer_size": len(report.stream_buffer),
+                "watch_stats": report.watch_stats,
             },
             source=self.name,
         ))
@@ -98,28 +101,37 @@ class PromptFence(Module):
             self._inspect_text(text, report)
 
     def _watch_streams(self, report: PromptFenceReport, interval: float) -> None:
-        watch_files: list[Path] = []
+        watched: list[tuple[Path, float]] = []
+        files_considered = 0
         for base in self._watch_paths:
             if not base.exists() or not base.is_dir():
                 continue
             for path in base.rglob("*"):
-                if path.is_file() and path.stat().st_size < 1024 * 1024:
-                    watch_files.append(path)
-                    if len(watch_files) >= 20:
+                if path.is_file() and path.stat().st_size < 512 * 1024:
+                    watched.append((path, path.stat().st_mtime))
+                    files_considered += 1
+                    if len(watched) >= 20:
                         break
-            if len(watch_files) >= 20:
+            if len(watched) >= 20:
                 break
-        for path in watch_files:
+        now = time.time()
+        for path, mtime in watched:
             try:
-                text = path.read_text(errors="ignore")
-                lines = text.splitlines()[:20]
-                for line in lines:
-                    if line.strip():
-                        self._inspect_text(line, report, stream=True)
+                if now - mtime > interval:
+                    text = path.read_text(errors="ignore")
+                    lines = text.splitlines()[:20]
+                    for idx, line in enumerate(lines, 1):
+                        if line.strip():
+                            self._inspect_text(line, report, stream=True, line_number=idx)
             except OSError:
                 continue
+        report.watch_stats = {
+            "files_considered": files_considered,
+            "files_watched": len(watched),
+            "interval_seconds": interval,
+        }
 
-    def _inspect_text(self, text: str, report: PromptFenceReport, stream: bool = False) -> None:
+    def _inspect_text(self, text: str, report: PromptFenceReport, stream: bool = False, line_number: int | None = None) -> None:
         digest = hashlib.sha256(text.encode()).hexdigest()[:12]
         if digest in self._seen:
             return
@@ -127,14 +139,21 @@ class PromptFence(Module):
         report.inputs_scanned += 1
         report.input_hashes[digest] = text
         if stream:
-            report.stream_buffer.append(text)
+            report.stream_buffer.append({
+                "digest": digest,
+                "line": line_number,
+                "text": text,
+                "detected_at": time.time(),
+            })
         for pattern in INJECTION_PATTERNS:
             if pattern.search(text):
                 severity = "high" if any(k in text.lower() for k in ["ignore", "disregard", "forget", "sudo", "override"]) else "medium"
                 report.matches.append(InjectionMatch(
                     pattern=pattern.pattern,
                     text=text,
+                    line=line_number,
                     severity=severity,
+                    detected_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 ))
         if report.matches:
             report.anomalies.append("injection_patterns_detected")
