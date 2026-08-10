@@ -93,14 +93,16 @@ class StackCheck(Module):
             if not line:
                 continue
             parts = line.split(None, 3)
+            # ps -eo pid=,comm=,args=,uid= outputs: pid comm args uid
+            # split(None, 3) gives: [pid, comm, args, uid] when all 4 present
             if len(parts) < 4:
                 continue
             try:
                 pid = int(parts[0])
                 name = parts[1]
-                uid_str = parts[2]
+                cmdline = parts[2].strip()
+                uid_str = parts[3]
                 uid = int(uid_str) if uid_str.isdigit() else None
-                cmdline = parts[3].strip()
                 report.processes.append(ProcessInfo(pid=pid, name=name, cmdline=cmdline, uid=uid))
             except (ValueError, IndexError):
                 continue
