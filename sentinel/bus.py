@@ -24,10 +24,11 @@ Handler = Callable[[Event], Coroutine[Any, Any, None]]
 
 
 class Bus:
-    def __init__(self, max_history: int = 1000) -> None:
+    def __init__(self, max_history: int = 1000, include_samples: bool = False) -> None:
         self._subscribers: dict[str, list[Handler]] = defaultdict(list)
         self._history: deque[Event] = deque(maxlen=max_history)
         self._lock = asyncio.Lock()
+        self.include_samples = include_samples
 
     async def publish(self, event: Event) -> None:
         async with self._lock:

@@ -71,7 +71,8 @@ class PromptFence(Module):
             source=self.name,
         ))
         report = PromptFenceReport()
-        self._scan_default_inputs(report)
+        if bus.include_samples:
+            self._scan_default_inputs(report)
         self._watch_streams(report, stream_interval)
         await bus.publish(Event(
             topic="promptfence.completed",

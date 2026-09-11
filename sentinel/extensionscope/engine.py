@@ -40,10 +40,16 @@ class ExtensionScope(Module):
     description = "Audits browser extension permissions and listener behavior."
 
     def __init__(self) -> None:
+        home = Path.home()
         self._bases = [
-            Path.home() / ".config/google-chrome/Default",
-            Path.home() / ".config/chromium/Default",
-            Path.home() / ".config/microsoft-edge/Default",
+            # Linux
+            home / ".config/google-chrome/Default",
+            home / ".config/chromium/Default",
+            home / ".config/microsoft-edge/Default",
+            # macOS
+            home / "Library/Application Support/Google/Chrome/Default",
+            home / "Library/Application Support/Chromium/Default",
+            home / "Library/Application Support/Microsoft Edge/Default",
         ]
         self._extension_dirs = [
             "Extensions",

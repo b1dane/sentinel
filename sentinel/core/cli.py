@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import sys
-from typing import Sequence
+from typing import Any, Sequence
 
 import click
 
@@ -24,8 +24,14 @@ def main(verbose: bool) -> None:
 @main.command()
 @click.option("--module", multiple=True, help="Limit run to specific module(s).")
 @click.option("--json", "output_json", is_flag=True, help="Emit machine-readable JSON.")
-def run(module: tuple[str, ...], output_json: bool) -> None:
-    bus = Bus()
+@click.option(
+    "--include-samples",
+    is_flag=True,
+    default=False,
+    help="Include built-in sample data in module scans (off by default).",
+)
+def run(module: tuple[str, ...], output_json: bool, include_samples: bool) -> None:
+    bus = Bus(include_samples=include_samples)
     orchestrator = Orchestrator(bus=bus)
     modules = list(module) if module else None
     results = asyncio.run(orchestrator.run(modules))

@@ -27,7 +27,6 @@ class Cookie:
     secure: bool
     http_only: bool
     same_site: str | None
-    samesite: str | None
 
 
 @dataclass(frozen=True)
@@ -91,7 +90,7 @@ class TraceKit(Module):
             payload={"status": "running"},
             source=self.name,
         ))
-        report = self._scan()
+        report = self._scan(include_samples=bus.include_samples)
         await bus.publish(Event(
             topic="tracekit.completed",
             payload={
@@ -106,23 +105,46 @@ class TraceKit(Module):
             source=self.name,
         ))
 
-    def _scan(self) -> TraceReport:
+    def _scan(self, include_samples: bool = False) -> TraceReport:
         report = TraceReport()
         self._scan_browser_dirs(report)
-        self._scan_sample_urls(report)
+        if include_samples:
+            self._scan_sample_urls(report)
         self._build_lineage(report)
         self._build_data_flow_maps(report)
         return report
 
     def _scan_browser_dirs(self, report: TraceReport) -> None:
+        home = Path.home()
         bases = [
-            Path.home() / ".config/google-chrome/Default",
-            Path.home() / ".config/chromium/Default",
-            Path.home() / ".config/microsoft-edge/Default",
+            # Linux
+            home / ".config/google-chrome/Default",
+            home / ".config/chromium/Default",
+            home / ".config/microsoft-edge/Default",
+            # macOS
+            home / "Library/Application Support/Google/Chrome/Default",
+            home / "Library/Application Support/Chromium/Default",
+            home / "Library/Application Support/Microsoft Edge/Default",
+            # Firefox profile roots
+            home / ".mozilla/firefox",
+            home / "Library/Application Support/Firefox/Profiles",
         ]
         for base in bases:
             if not base.exists():
                 continue
+            # Firefox: walk profiles that contain cookies.sqlite
+            if base.name in {"firefox", "Profiles"} and base.is_dir():
+                for profile in base.iterdir():
+                    if not profile.is_dir():
+                        continue
+                    cookies_db = profile / "cookies.sqlite"
+                    if cookies_db.exists():
+                        self._read_firefox_cookies(cookies_db, profile.name, report)
+                    places_db = profile / "places.sqlite"
+                    if places_db.exists():
+                        self._read_firefox_history(places_db, profile.name, report)
+                continue
+
             cookies_db = base / "Cookies"
             if cookies_db.exists():
                 self._read_cookies(cookies_db, base.name, report)
@@ -156,7 +178,6 @@ class TraceKit(Module):
                     secure=bool(row["is_secure"]),
                     http_only=bool(row["is_httponly"]),
                     same_site=str(row["samesite"]) if row["samesite"] is not None else None,
-                    samesite=None,
                 ))
             conn.close()
         except (sqlite3.Error, OSError) as exc:
@@ -182,6 +203,52 @@ class TraceKit(Module):
             conn.close()
         except (sqlite3.Error, OSError) as exc:
             report.errors.append(f"history_read_failed:{profile}:{exc}")
+
+    def _read_firefox_cookies(self, db_path: Path, profile: str, report: TraceReport) -> None:
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT host, name, path, isSecure, isHttpOnly, sameSite "
+                "FROM moz_cookies LIMIT 200"
+            )
+            for row in cur.fetchall():
+                report.cookies.append(Cookie(
+                    domain=row["host"],
+                    name=row["name"],
+                    path=row["path"],
+                    secure=bool(row["isSecure"]),
+                    http_only=bool(row["isHttpOnly"]),
+                    same_site=str(row["sameSite"]) if row["sameSite"] is not None else None,
+                ))
+            conn.close()
+        except (sqlite3.Error, OSError) as exc:
+            report.errors.append(f"firefox_cookie_read_failed:{profile}:{exc}")
+
+    def _read_firefox_history(self, db_path: Path, profile: str, report: TraceReport) -> None:
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT url, title FROM moz_places "
+                "WHERE url IS NOT NULL ORDER BY last_visit_date DESC LIMIT 50"
+            )
+            for row in cur.fetchall():
+                url = row["url"]
+                parsed = urlparse(url)
+                params = {k: v for k, v in parse_qs(parsed.query).items()}
+                utm = {k: v[0] for k, v in params.items() if k.startswith("utm_")}
+                report.urls.append(URLTrace(
+                    url=url,
+                    domain=parsed.netloc,
+                    params=params,
+                    utm_params=utm,
+                ))
+            conn.close()
+        except (sqlite3.Error, OSError) as exc:
+            report.errors.append(f"firefox_history_read_failed:{profile}:{exc}")
 
     def _scan_sample_urls(self, report: TraceReport) -> None:
         samples = [
