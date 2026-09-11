@@ -16,9 +16,9 @@ from sentinel.core.module import Module
 
 logger = logging.getLogger(__name__)
 
-# pid  name  args...  uid  (uid is always the last integer token)
+# pid  name  args...  uid  (uid is the last integer; args must be non-empty)
 _UNIX_PS_RE = re.compile(
-    r"^\s*(\d+)\s+(\S+)\s+(.*?)\s+(\d+)\s*$",
+    r"^\s*(\d+)\s+(\S+)\s+(.+?)\s+(\d+)\s*$",
 )
 
 
@@ -105,6 +105,8 @@ class StackCheck(Module):
                 name = match.group(2)
                 cmdline = match.group(3).strip()
                 uid = int(match.group(4))
+                if not cmdline:
+                    continue
                 report.processes.append(ProcessInfo(pid=pid, name=name, cmdline=cmdline, uid=uid))
             except (ValueError, IndexError):
                 continue
