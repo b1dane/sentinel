@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import platform
+import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from sentinel.bus import Bus, Event
 from sentinel.core.module import Module
 
 logger = logging.getLogger(__name__)
+
+# pid  name  args...  uid  (uid is always the last integer token)
+_UNIX_PS_RE = re.compile(
+    r"^\s*(\d+)\s+(\S+)\s+(.*?)\s+(\d+)\s*$",
+)
 
 
 @dataclass(frozen=True)
@@ -92,17 +97,14 @@ class StackCheck(Module):
             line = line.strip()
             if not line:
                 continue
-            parts = line.split(None, 3)
-            # ps -eo pid=,comm=,args=,uid= outputs: pid comm args uid
-            # split(None, 3) gives: [pid, comm, args, uid] when all 4 present
-            if len(parts) < 4:
+            match = _UNIX_PS_RE.match(line)
+            if not match:
                 continue
             try:
-                pid = int(parts[0])
-                name = parts[1]
-                cmdline = parts[2].strip()
-                uid_str = parts[3]
-                uid = int(uid_str) if uid_str.isdigit() else None
+                pid = int(match.group(1))
+                name = match.group(2)
+                cmdline = match.group(3).strip()
+                uid = int(match.group(4))
                 report.processes.append(ProcessInfo(pid=pid, name=name, cmdline=cmdline, uid=uid))
             except (ValueError, IndexError):
                 continue
@@ -113,7 +115,7 @@ class StackCheck(Module):
             if not line:
                 continue
             parts = [p.strip('"') for p in line.split(",")]
-            if len(parts) < 3:
+            if len(parts) < 2:
                 continue
             try:
                 name = parts[0]
@@ -142,7 +144,7 @@ class StackCheck(Module):
                 report.anomalies.append(f"hash_failed:{path}:{exc}")
 
     def _detect_anomalies(self, report: StackCheckReport) -> None:
-        now = __import__("time").time()
+        now = time.time()
         for proc in report.processes:
             if proc.uid == 0 and proc.name not in {"init", "systemd", "kernel_task", "launchd_sim"}:
                 report.anomalies.append(f"root_process:{proc.pid}:{proc.name}")

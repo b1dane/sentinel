@@ -5,13 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sys
-from typing import Any, Sequence
+from typing import Any
 
 import click
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from sentinel.bus import Bus
 from sentinel.core.orchestrator import Orchestrator
+from sentinel.core.registry import Registry
+
+console = Console()
 
 
 @click.group()
@@ -38,46 +44,85 @@ def run(module: tuple[str, ...], output_json: bool, include_samples: bool) -> No
     _print_results(results, output_json)
 
 
-def _print_results(results: dict[str, Any], output_json: bool) -> None:
-    if output_json:
-        click.echo(json.dumps(results, indent=2))
-        return
-    for module_name, payload in results.items():
-        click.echo(f"[{module_name}]")
-        if payload.get("status") == "error":
-            click.echo(f"  error: {payload.get('error')}")
-            continue
-        anomalies = payload.get("anomalies", [])
-        if anomalies:
-            click.echo(f"  anomalies: {len(anomalies)}")
-            for anomaly in anomalies[:10]:
-                click.echo(f"    - {anomaly}")
-        else:
-            click.echo("  anomalies: none")
-        if "hostname" in payload:
-            click.echo(f"  host: {payload['hostname']} ({payload.get('platform', '')})")
-        if "processes" in payload:
-            click.echo(f"  processes: {len(payload['processes'])}")
-        if "file_hashes" in payload:
-            click.echo(f"  file_hashes: {len(payload['file_hashes'])}")
-        if "entries" in payload:
-            click.echo(f"  memory_entries: {len(payload['entries'])}")
-        if "extensions" in payload:
-            click.echo(f"  extensions: {len(payload['extensions'])}")
-        if "urls" in payload:
-            click.echo(f"  urls: {len(payload['urls'])}")
-        if "vendor_scripts" in payload:
-            click.echo(f"  vendor_scripts: {len(payload['vendor_scripts'])}")
-        if "inputs_scanned" in payload:
-            click.echo(f"  inputs_scanned: {payload['inputs_scanned']}")
-            matches = payload.get("matches", [])
-            click.echo(f"  injection_matches: {len(matches)}")
-        click.echo()
+@main.command("modules")
+def list_modules() -> None:
+    """List available modules and their descriptions."""
+    registry = Registry()
+    table = Table(title="Sentinel modules", show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="green")
+    table.add_column("Description")
+    for mod in registry.all():
+        table.add_row(mod.name, mod.description or "—")
+    console.print(table)
 
 
 @main.command()
 def status() -> None:
-    click.echo("Sentinel local bus is available. No persistent daemon in v0.1.")
+    console.print(
+        Panel(
+            "Sentinel local bus is available.\nNo persistent daemon in v0.1.",
+            title="Status",
+            border_style="blue",
+        )
+    )
+
+
+def _print_results(results: dict[str, Any], output_json: bool) -> None:
+    if output_json:
+        click.echo(json.dumps(results, indent=2))
+        return
+
+    if not results:
+        console.print("[yellow]No modules ran.[/yellow]")
+        return
+
+    for module_name, payload in results.items():
+        status = payload.get("status", "unknown")
+        if status == "error":
+            console.print(
+                Panel(
+                    Text(str(payload.get("error", "unknown error")), style="red"),
+                    title=f"[{module_name}] error",
+                    border_style="red",
+                )
+            )
+            continue
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("key", style="dim")
+        table.add_column("value")
+
+        anomalies = payload.get("anomalies", [])
+        if anomalies:
+            table.add_row("anomalies", str(len(anomalies)))
+            for anomaly in anomalies[:10]:
+                table.add_row("", f"• {anomaly}")
+            if len(anomalies) > 10:
+                table.add_row("", f"… and {len(anomalies) - 10} more")
+        else:
+            table.add_row("anomalies", "none")
+
+        if "hostname" in payload:
+            table.add_row("host", f"{payload['hostname']} ({payload.get('platform', '')})")
+        if "processes" in payload:
+            table.add_row("processes", str(len(payload["processes"])))
+        if "file_hashes" in payload:
+            table.add_row("file_hashes", str(len(payload["file_hashes"])))
+        if "entries" in payload:
+            table.add_row("memory_entries", str(len(payload["entries"])))
+        if "extensions" in payload:
+            table.add_row("extensions", str(len(payload["extensions"])))
+        if "urls" in payload:
+            table.add_row("urls", str(len(payload["urls"])))
+        if "vendor_scripts" in payload:
+            table.add_row("vendor_scripts", str(len(payload["vendor_scripts"])))
+        if "inputs_scanned" in payload:
+            table.add_row("inputs_scanned", str(payload["inputs_scanned"]))
+            matches = payload.get("matches", [])
+            table.add_row("injection_matches", str(len(matches)))
+
+        border = "green" if status == "ok" else "yellow"
+        console.print(Panel(table, title=f"[{module_name}] {status}", border_style=border))
 
 
 if __name__ == "__main__":

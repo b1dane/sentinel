@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
-import os
 import re
 import time
 from collections import deque
@@ -14,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from sentinel.bus import Bus, Event
+from sentinel.config import watch_paths
 from sentinel.core.module import Module
 
 logger = logging.getLogger(__name__)
@@ -57,10 +56,7 @@ class PromptFence(Module):
     description = "Detects prompt injection and adversarial input attempts."
 
     def __init__(self) -> None:
-        self._watch_paths = [
-            Path.home() / ".hermes" / "memories",
-            Path("/tmp"),
-        ]
+        self._watch_paths = watch_paths()
         self._seen: deque[str] = deque(maxlen=1000)
         self._last_scan_ts = 0.0
 
@@ -130,9 +126,16 @@ class PromptFence(Module):
             "files_considered": files_considered,
             "files_watched": len(watched),
             "interval_seconds": interval,
+            "paths": [str(p) for p in self._watch_paths],
         }
 
-    def _inspect_text(self, text: str, report: PromptFenceReport, stream: bool = False, line_number: int | None = None) -> None:
+    def _inspect_text(
+        self,
+        text: str,
+        report: PromptFenceReport,
+        stream: bool = False,
+        line_number: int | None = None,
+    ) -> None:
         digest = hashlib.sha256(text.encode()).hexdigest()[:12]
         if digest in self._seen:
             return
@@ -148,7 +151,14 @@ class PromptFence(Module):
             })
         for pattern in INJECTION_PATTERNS:
             if pattern.search(text):
-                severity = "high" if any(k in text.lower() for k in ["ignore", "disregard", "forget", "sudo", "override"]) else "medium"
+                severity = (
+                    "high"
+                    if any(
+                        k in text.lower()
+                        for k in ["ignore", "disregard", "forget", "sudo", "override"]
+                    )
+                    else "medium"
+                )
                 report.matches.append(InjectionMatch(
                     pattern=pattern.pattern,
                     text=text,

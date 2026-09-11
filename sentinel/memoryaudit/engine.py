@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from sentinel.bus import Bus, Event
+from sentinel.config import max_entries
 from sentinel.core.module import Module
 
 logger = logging.getLogger(__name__)
@@ -50,11 +49,14 @@ class MemoryAudit(Module):
             source=self.name,
         ))
         report = self._scan_local_stores()
+        # Flat string codes for consistent CLI / JSON consumers
+        anomaly_codes = [f"{a.reason}:{a.entry.path}" for a in report.anomalies]
         await bus.publish(Event(
             topic="memoryaudit.completed",
             payload={
                 "entries": [e.__dict__ for e in report.entries],
-                "anomalies": [
+                "anomalies": anomaly_codes,
+                "anomaly_details": [
                     {
                         "entry": a.entry.__dict__,
                         "reason": a.reason,
@@ -72,13 +74,13 @@ class MemoryAudit(Module):
             (Path.home() / ".config" / "gh", "config"),
         ]
         now = time.time()
-        max_entries = 100
+        limit = max_entries()
         for base, category in bases:
             if not base.exists() or not base.is_dir():
                 continue
             for root, _, files in os.walk(base):
                 for name in files:
-                    if len(report.entries) >= max_entries:
+                    if len(report.entries) >= limit:
                         break
                     path = Path(root) / name
                     try:
@@ -110,9 +112,9 @@ class MemoryAudit(Module):
                             ))
                     except OSError:
                         continue
-                if len(report.entries) >= max_entries:
+                if len(report.entries) >= limit:
                     break
-            if len(report.entries) >= max_entries:
+            if len(report.entries) >= limit:
                 break
         return report
 
